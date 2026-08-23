@@ -53,6 +53,18 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 add_test(NAME handle-table COMMAND nts_handle_table_test)
 
+add_executable(nts_counter_contract_test
+  examples/counter/app.c
+  tests/counter_contract.c
+)
+target_link_libraries(nts_counter_contract_test PRIVATE nts_web_runtime)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+  target_compile_options(nts_counter_contract_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+endif()
+add_test(NAME counter-contract COMMAND nts_counter_contract_test)
+
 # This standalone CMake build validates the public C contract and target-neutral
 # runtime pieces. The Blink adapter is compiled inside a pinned Chromium
 # GN/Ninja build, where Blink's C++ implementation types are available.
