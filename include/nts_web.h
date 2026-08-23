@@ -36,6 +36,14 @@ typedef struct {
   uint32_t generation;
 } NtsWebCallbackToken;
 
+/* Event registrations are resources in their own domain. They deliberately do
+ * not alias DOM object handles: disposing one removes the exact native Blink
+ * listener associated with that registration. */
+typedef struct {
+  uint32_t slot;
+  uint32_t generation;
+} NtsWebSubscription;
+
 typedef enum {
   NTS_WEB_OK = 0,
   NTS_WEB_INVALID_ARGUMENT,
@@ -66,6 +74,12 @@ typedef struct {
 
 typedef struct {
   NtsWebStatus status;
+  NtsWebSubscription value;
+  NtsWebException exception;
+} NtsWebSubscriptionResult;
+
+typedef struct {
+  NtsWebStatus status;
   NtsWebException exception;
 } NtsWebVoidResult;
 
@@ -79,9 +93,8 @@ void nts_web_exception_dispose(NtsWebException *exception);
 bool nts_web_realm_is_current(const NtsWebRealm *realm);
 bool nts_web_realm_is_alive(const NtsWebRealm *realm);
 
-/* Root objects. Root acquisition can fail after context destruction or when a
- * new native handle cannot be allocated, so it uses the same checked result
- * form as all other interface-valued Web API results. */
+/* Root objects. A successful nullable interface result uses the zero handle
+ * (`slot == 0 && generation == 0`) for WebIDL null. */
 NtsWebHandleResult nts_web_window(NtsWebRealm *realm);
 NtsWebHandleResult nts_web_document(NtsWebRealm *realm);
 NtsWebHandleResult nts_web_document_body(NtsWebRealm *realm,
@@ -113,6 +126,20 @@ NtsWebVoidResult nts_web_element_set_attribute(
     NtsWebHandle element,
     NtsUtf8View name,
     NtsUtf8View value);
+
+/* The callback token belongs to the compiled/runtime side. Blink stores only
+ * that opaque token; it never owns or reads a ScriptC closure. The first
+ * counter fixture reaches the payload-free listener shape, so no Event handle
+ * is materialized yet. */
+NtsWebSubscriptionResult nts_web_event_target_add_event_listener(
+    NtsWebRealm *realm,
+    NtsWebHandle target,
+    NtsUtf8View event_type,
+    NtsWebCallbackToken callback);
+
+NtsWebStatus nts_web_subscription_dispose(
+    NtsWebRealm *realm,
+    NtsWebSubscription subscription);
 
 /* Handle lifetime. Releasing the final Native TypeScript edge allows the
  * realm registry to release its corresponding Oilpan strong edge. */
