@@ -50,27 +50,55 @@ Two descriptions deliberately have different jobs:
 - TypeScript's `lib.dom.d.ts` defines what ordinary TypeScript source can say and how it is type-checked.
 - Blink's WebIDL database, from the exact pinned Chromium revision, defines the implementation-facing contract: WebIDL scalar/string conversions, nullability, dictionaries and unions, exposure/runtime conditions, exception behavior, implementation names, execution-context requirements, reactions, promises, callbacks, and related extended attributes.
 
-A future WebIDL binding generator joins the reached `lib.dom.d.ts` members to the corresponding pinned Blink IDL definitions and emits a closed native binding manifest plus the C/C++ capsule surface. Application developers do not consume a replacement DOM declaration library.
+The WebIDL binding generator joins reached `lib.dom.d.ts` members to the corresponding pinned Blink IDL definitions and emits a closed native binding manifest plus the C/C++ capsule surface. Application developers do not consume a replacement DOM declaration library.
 
 ## Current implementation
 
-The repository is now pinned to Chromium `96324a4012fe62f48b9463a67486eeb645bc5c78`.
+The repository is pinned to Chromium `96324a4012fe62f48b9463a67486eeb645bc5c78`.
 
 Implemented in the standalone native contract:
 
 - typed C Web API ABI in `include/nts_web.h`;
 - explicit owned lifetime for Web/DOM exception strings;
 - generation-checked handle slots with retain/release, stale-handle rejection, subtype validation and realm invalidation;
-- a plain-C counter fixture shaped like future ScriptC output, including unwind cleanup;
+- plain-C counter and direct-`createElement` fixtures shaped like future ScriptC output;
 - CI build plus native handle-table tests.
 
-Implemented as Blink-side C++ bridge code:
+Implemented in the Blink integration source:
 
+- a Chromium patch that introduces a binding-neutral `WebExceptionState` and keeps the existing V8-facing `Document::CreateElementForBinding` as a sibling adapter;
+- a direct C capsule for `nts_web_document_create_element()` that resolves a checked `Document` handle, calls Blink's own create-element algorithm, translates the neutral exception, and interns the real returned `Element`;
+- `NtsWebRealm`, bound to one renderer sequence and one Blink execution context, with deterministic invalidation through `ExecutionContextLifecycleObserver`;
 - `BlinkNodeRegistry`, which roots real Blink nodes with Oilpan `Persistent<Node>` while the C side sees only opaque handles;
 - identity interning without a long-lived untraced raw-pointer reverse map;
-- a `NativeEventListener` adapter that receives real Blink `Event*` objects and dispatches by Native TypeScript callback token, without a V8 listener wrapper.
+- a `NativeEventListener` adapter that receives real Blink `Event*` objects and dispatches by Native TypeScript callback token, without a JavaScript listener wrapper.
 
-The first required Chromium refactor is also pinned precisely: `Document::CreateElementForBinding` currently depends on V8-oriented `ExceptionState`. We will split its failure carrier from the DOM operation rather than call V8, ignore exceptions, call `CreateRawElement`, or duplicate the DOM create-element algorithm. See [`docs/chromium-seams.md`](docs/chromium-seams.md).
+Chromium patches are checked against the exact pinned source in CI. To install the patch and bridge into a clean checkout at that revision:
+
+```sh
+python3 scripts/verify_chromium_patches.py
+python3 scripts/apply_chromium.py /path/to/chromium/src
+```
+
+The overlay installs as `//third_party/blink/renderer/native_typescript`, so its GN target is inside Blink's renderer dependency boundary:
+
+```text
+//third_party/blink/renderer/native_typescript:nts_blink_bridge
+```
+
+The direct create-element call chain is now represented exactly as:
+
+```text
+plain C
+  -> nts_web_document_create_element
+  -> checked realm/document handle
+  -> WebExceptionState
+  -> blink::Document::CreateElementForBinding
+  -> real blink::Element
+  -> Oilpan-rooted native handle
+```
+
+No V8 object, V8 function, JavaScript source evaluation, property lookup, or generic command bridge participates in that path.
 
 ## Repository role
 
