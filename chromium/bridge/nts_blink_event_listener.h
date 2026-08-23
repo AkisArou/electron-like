@@ -1,7 +1,7 @@
 #ifndef NTS_BLINK_EVENT_LISTENER_H
 #define NTS_BLINK_EVENT_LISTENER_H
 
-#include "nts_web.h"
+#include "third_party/blink/renderer/native_typescript/nts_web.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
