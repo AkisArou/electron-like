@@ -88,10 +88,12 @@ int main(void) {
          NTS_WEB_CONTEXT_DESTROYED);
   assert(nts_handle_table_release(&table, second) ==
          NTS_WEB_CONTEXT_DESTROYED);
-  assert(nts_handle_table_insert(&table, 1, new_token(13), &second) ==
+
+  /* A failed insert does not transfer token ownership to the table. */
+  void *rejected = new_token(13);
+  assert(nts_handle_table_insert(&table, 1, rejected, &second) ==
          NTS_WEB_CONTEXT_DESTROYED);
-  /* insert did not take ownership on failure. */
-  free((void *)(uintptr_t)0); /* no-op, keeps the ownership rule explicit */
+  free(rejected);
 
   nts_handle_table_destroy(&table);
   assert(context.destroyed == 3);
