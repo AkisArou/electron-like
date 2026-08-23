@@ -1,4 +1,4 @@
-#include "nts_web.h"
+#include "third_party/blink/renderer/native_typescript/nts_web.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -6,7 +6,7 @@
 #include <string_view>
 
 #include "base/containers/span.h"
-#include "chromium/bridge/nts_blink_realm.h"
+#include "third_party/blink/renderer/native_typescript/nts_blink_realm.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -62,6 +62,7 @@ NtsWebStatus NativeStatus(const blink::WebExceptionState& source) {
     case Kind::kSyntaxError:
       return NTS_WEB_SYNTAX_ERROR;
   }
+  return NTS_WEB_INVALID_ARGUMENT;
 }
 
 blink::String ExceptionName(const blink::WebExceptionState& source) {
@@ -79,6 +80,7 @@ blink::String ExceptionName(const blink::WebExceptionState& source) {
     case Kind::kSyntaxError:
       return blink::String("SyntaxError");
   }
+  return blink::String();
 }
 
 NtsWebStatus CopyException(const blink::WebExceptionState& source,
@@ -142,7 +144,7 @@ extern "C" NtsWebHandleResult nts_web_document_create_element(
       document_handle, nts::blink_bridge::WebTypeId::kDocument, &document_node);
   if (status != NTS_WEB_OK) return HandleFailure(status);
 
-  auto* document = blink::To<blink::Document>(document_node);
+  auto* document = static_cast<blink::Document*>(document_node);
   const auto bytes = base::span(local_name.data, local_name.length);
   blink::String name = blink::String::FromUtf8(bytes);
   if (name.IsNull() && local_name.length != 0) {
