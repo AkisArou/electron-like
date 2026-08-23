@@ -4,14 +4,64 @@
 
 #include "base/check.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
+
+namespace nts::blink_bridge {
+
+/* Oilpan-owned observer, explicitly rooted by the off-heap realm. The raw
+ * pointer points out of Oilpan on purpose: Detach() clears it before the
+ * off-heap owner is destroyed, while ContextDestroyed() runs on the owner
+ * sequence and invalidates the realm before Blink drops the execution context. */
+class BlinkRealmLifecycleObserver final
+    : public blink::GarbageCollected<BlinkRealmLifecycleObserver>,
+      public blink::ExecutionContextLifecycleObserver {
+ public:
+  BlinkRealmLifecycleObserver(blink::ExecutionContext* context,
+                              NtsWebRealm* realm)
+      : blink::ExecutionContextLifecycleObserver(context), realm_(realm) {
+    CHECK(context);
+    CHECK(realm_);
+  }
+
+  void Detach() {
+    realm_ = nullptr;
+    SetExecutionContext(nullptr);
+  }
+
+  void Trace(blink::Visitor* visitor) const override {
+    blink::ExecutionContextLifecycleObserver::Trace(visitor);
+  }
+
+ private:
+  void ContextDestroyed() override {
+    if (!realm_) return;
+    realm_->Invalidate();
+    realm_ = nullptr;
+  }
+
+  NtsWebRealm* realm_;
+};
+
+}  // namespace nts::blink_bridge
 
 NtsWebRealm::NtsWebRealm(blink::Document* document) : document_(document) {
   CHECK(document);
+  CHECK(document->GetExecutionContext());
   CHECK(IsCurrent());
+  lifecycle_observer_ =
+      blink::MakeGarbageCollected<nts::blink_bridge::BlinkRealmLifecycleObserver>(
+          document->GetExecutionContext(), this);
 }
 
 NtsWebRealm::~NtsWebRealm() {
   CHECK(IsCurrent());
+  if (lifecycle_observer_.Get()) {
+    lifecycle_observer_->Detach();
+    lifecycle_observer_ = nullptr;
+  }
   Invalidate();
 }
 
@@ -39,7 +89,7 @@ blink::Document* NtsWebRealm::Document() const {
 namespace nts::blink_bridge {
 
 NtsWebRealm* CreateWebRealm(blink::Document* document) {
-  if (!document) return nullptr;
+  if (!document || !document->GetExecutionContext()) return nullptr;
   return new (std::nothrow) NtsWebRealm(document);
 }
 
