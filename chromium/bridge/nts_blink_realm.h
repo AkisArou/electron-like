@@ -2,8 +2,8 @@
 #define NTS_BLINK_REALM_H
 
 #include "base/sequence_checker.h"
-#include "chromium/bridge/nts_blink_node_registry.h"
-#include "nts_web.h"
+#include "third_party/blink/renderer/native_typescript/nts_blink_node_registry.h"
+#include "third_party/blink/renderer/native_typescript/nts_web.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 
 namespace blink {
