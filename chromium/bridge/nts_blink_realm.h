@@ -10,6 +10,10 @@ namespace blink {
 class Document;
 }
 
+namespace nts::blink_bridge {
+class BlinkRealmLifecycleObserver;
+}
+
 /* C sees only the opaque forward declaration from nts_web.h. The Chromium
  * adapter sees this owner-sequence-confined definition. It is deliberately an
  * off-heap object: its Persistent<Document> and BlinkNodeRegistry entries are
@@ -32,6 +36,8 @@ struct NtsWebRealm final {
   base::SequenceChecker sequence_checker_;
   bool alive_ = true;
   blink::Persistent<blink::Document> document_;
+  blink::Persistent<nts::blink_bridge::BlinkRealmLifecycleObserver>
+      lifecycle_observer_;
   nts::blink_bridge::BlinkNodeRegistry nodes_;
 };
 
