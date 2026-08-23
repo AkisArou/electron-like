@@ -1,4 +1,4 @@
-#include "chromium/bridge/nts_blink_event_listener.h"
+#include "third_party/blink/renderer/native_typescript/nts_blink_event_listener.h"
 
 #include "base/check.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
