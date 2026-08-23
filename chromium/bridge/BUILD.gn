@@ -58,3 +58,29 @@ source_set("nts_counter_example") {
   include_dirs = [ "." ]
   deps = [ ":nts_blink_bridge" ]
 }
+
+# Adapter from content's public WebLocalFrame seam into Blink's internal
+# LocalFrame/Document world. Keeping this inside Blink avoids exposing core DOM
+# implementation types to the content embedder.
+source_set("nts_counter_host") {
+  sources = [
+    "nts_blink_counter_host.cc",
+    "nts_blink_counter_host.h",
+  ]
+
+  include_dirs = [ "." ]
+
+  configs += [
+    "//third_party/blink/renderer:config",
+    "//third_party/blink/renderer:non_test_config",
+    "//third_party/blink/renderer:inside_blink",
+    "//third_party/blink/renderer/core:blink_core_pch",
+  ]
+
+  deps = [
+    ":nts_blink_bridge",
+    ":nts_counter_example",
+    "//third_party/blink/public:blink",
+    "//third_party/blink/renderer/core",
+  ]
+}
