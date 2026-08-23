@@ -80,7 +80,7 @@ source_set("nts_counter_host") {
   deps = [
     ":nts_blink_bridge",
     ":nts_counter_example",
-    "//third_party/blink/public:blink",
+    "//third_party/blink/public:blink_headers",
     "//third_party/blink/renderer/core",
   ]
 }
