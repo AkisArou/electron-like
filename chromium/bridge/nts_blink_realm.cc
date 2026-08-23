@@ -47,7 +47,13 @@ class BlinkRealmLifecycleObserver final
 
 }  // namespace nts::blink_bridge
 
-NtsWebRealm::NtsWebRealm(blink::Document* document) : document_(document) {
+NtsWebRealm::NtsWebRealm(
+    blink::Document* document,
+    nts::blink_bridge::NativeEventDispatch event_dispatch,
+    void* event_context)
+    : document_(document),
+      event_dispatch_(event_dispatch),
+      event_context_(event_context) {
   CHECK(document);
   CHECK(document->GetExecutionContext());
   CHECK(IsCurrent());
@@ -77,8 +83,15 @@ void NtsWebRealm::Invalidate() {
   CHECK(IsCurrent());
   if (!alive_) return;
   alive_ = false;
+
+  /* Listener cancellation comes first: listener roots contain raw pointers
+   * back to this realm, so every registration is removed/detached before DOM
+   * object roots or the document root are released. */
+  subscriptions_.Invalidate();
   nodes_.Invalidate();
   document_ = nullptr;
+  event_dispatch_ = nullptr;
+  event_context_ = nullptr;
 }
 
 blink::Document* NtsWebRealm::Document() const {
@@ -86,11 +99,22 @@ blink::Document* NtsWebRealm::Document() const {
   return alive_ ? document_.Get() : nullptr;
 }
 
+void NtsWebRealm::DispatchNativeEvent(NtsWebCallbackToken token,
+                                      blink::ExecutionContext* context) {
+  CHECK(IsCurrent());
+  if (!alive_ || !event_dispatch_ || !context || !document_.Get()) return;
+  if (context != document_->GetExecutionContext()) return;
+  event_dispatch_(this, token, event_context_);
+}
+
 namespace nts::blink_bridge {
 
-NtsWebRealm* CreateWebRealm(blink::Document* document) {
+NtsWebRealm* CreateWebRealm(blink::Document* document,
+                            NativeEventDispatch event_dispatch,
+                            void* event_context) {
   if (!document || !document->GetExecutionContext()) return nullptr;
-  return new (std::nothrow) NtsWebRealm(document);
+  return new (std::nothrow)
+      NtsWebRealm(document, event_dispatch, event_context);
 }
 
 void DestroyWebRealm(NtsWebRealm* realm) {
@@ -129,4 +153,13 @@ extern "C" NtsWebStatus nts_web_handle_release(NtsWebRealm* realm,
   if (!realm->IsCurrent()) return NTS_WEB_WRONG_SEQUENCE;
   if (!realm->IsAlive()) return NTS_WEB_CONTEXT_DESTROYED;
   return realm->Nodes().Release(handle);
+}
+
+extern "C" NtsWebStatus nts_web_subscription_dispose(
+    NtsWebRealm* realm,
+    NtsWebSubscription subscription) {
+  if (!realm) return NTS_WEB_INVALID_ARGUMENT;
+  if (!realm->IsCurrent()) return NTS_WEB_WRONG_SEQUENCE;
+  if (!realm->IsAlive()) return NTS_WEB_CONTEXT_DESTROYED;
+  return realm->Subscriptions().Dispose(subscription);
 }
