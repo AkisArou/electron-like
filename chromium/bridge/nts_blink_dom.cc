@@ -6,12 +6,16 @@
 #include <string_view>
 
 #include "base/containers/span.h"
-#include "third_party/blink/renderer/native_typescript/nts_blink_realm.h"
+#include "third_party/blink/renderer/core/dom/container_node.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/node.h"
+#include "third_party/blink/renderer/core/html/html_script_element.h"
+#include "third_party/blink/renderer/native_typescript/nts_blink_realm.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/web_exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
@@ -21,6 +25,20 @@ NtsWebHandleResult HandleFailure(NtsWebStatus status) {
   NtsWebHandleResult result{};
   result.status = status;
   result.exception.status = status;
+  return result;
+}
+
+NtsWebVoidResult VoidFailure(NtsWebStatus status) {
+  NtsWebVoidResult result{};
+  result.status = status;
+  result.exception.status = status;
+  return result;
+}
+
+NtsWebVoidResult VoidSuccess() {
+  NtsWebVoidResult result{};
+  result.status = NTS_WEB_OK;
+  result.exception.status = NTS_WEB_OK;
   return result;
 }
 
@@ -114,6 +132,18 @@ NtsWebStatus CheckRealm(NtsWebRealm* realm) {
   return NTS_WEB_OK;
 }
 
+NtsWebStatus DecodeUtf8(NtsUtf8View source, blink::String* out) {
+  if (!out || (!source.data && source.length != 0)) {
+    return NTS_WEB_INVALID_ARGUMENT;
+  }
+  const auto bytes = base::span(source.data, source.length);
+  *out = blink::String::FromUtf8(bytes);
+  if (out->IsNull() && source.length != 0) {
+    return NTS_WEB_INVALID_ARGUMENT;
+  }
+  return NTS_WEB_OK;
+}
+
 }  // namespace
 
 extern "C" NtsWebHandleResult nts_web_document(NtsWebRealm* realm) {
@@ -129,15 +159,11 @@ extern "C" NtsWebHandleResult nts_web_document(NtsWebRealm* realm) {
   return result;
 }
 
-extern "C" NtsWebHandleResult nts_web_document_create_element(
+extern "C" NtsWebHandleResult nts_web_document_body(
     NtsWebRealm* realm,
-    NtsWebHandle document_handle,
-    NtsUtf8View local_name) {
+    NtsWebHandle document_handle) {
   const NtsWebStatus realm_status = CheckRealm(realm);
   if (realm_status != NTS_WEB_OK) return HandleFailure(realm_status);
-  if (!local_name.data && local_name.length != 0) {
-    return HandleFailure(NTS_WEB_INVALID_ARGUMENT);
-  }
 
   blink::Node* document_node = nullptr;
   NtsWebStatus status = realm->Nodes().Resolve(
@@ -145,12 +171,35 @@ extern "C" NtsWebHandleResult nts_web_document_create_element(
   if (status != NTS_WEB_OK) return HandleFailure(status);
 
   auto* document = static_cast<blink::Document*>(document_node);
-  const auto bytes = base::span(local_name.data, local_name.length);
-  blink::String name = blink::String::FromUtf8(bytes);
-  if (name.IsNull() && local_name.length != 0) {
-    return HandleFailure(NTS_WEB_INVALID_ARGUMENT);
-  }
+  blink::HTMLElement* body = document->body();
 
+  NtsWebHandleResult result{};
+  result.status = NTS_WEB_OK;
+  result.exception.status = NTS_WEB_OK;
+  if (!body) return result;  // WebIDL null is the zero handle.
+
+  result.status = realm->Nodes().Intern(body, &result.value);
+  result.exception.status = result.status;
+  return result;
+}
+
+extern "C" NtsWebHandleResult nts_web_document_create_element(
+    NtsWebRealm* realm,
+    NtsWebHandle document_handle,
+    NtsUtf8View local_name) {
+  const NtsWebStatus realm_status = CheckRealm(realm);
+  if (realm_status != NTS_WEB_OK) return HandleFailure(realm_status);
+
+  blink::Node* document_node = nullptr;
+  NtsWebStatus status = realm->Nodes().Resolve(
+      document_handle, nts::blink_bridge::WebTypeId::kDocument, &document_node);
+  if (status != NTS_WEB_OK) return HandleFailure(status);
+
+  blink::String name;
+  status = DecodeUtf8(local_name, &name);
+  if (status != NTS_WEB_OK) return HandleFailure(status);
+
+  auto* document = static_cast<blink::Document*>(document_node);
   blink::WebExceptionState exception_state;
   blink::Element* element = document->CreateElementForBinding(
       blink::AtomicString(name), exception_state);
@@ -166,4 +215,69 @@ extern "C" NtsWebHandleResult nts_web_document_create_element(
   result.status = realm->Nodes().Intern(element, &result.value);
   result.exception.status = result.status;
   return result;
+}
+
+extern "C" NtsWebVoidResult nts_web_node_set_text_content(
+    NtsWebRealm* realm,
+    NtsWebHandle node_handle,
+    NtsUtf8View text_utf8) {
+  const NtsWebStatus realm_status = CheckRealm(realm);
+  if (realm_status != NTS_WEB_OK) return VoidFailure(realm_status);
+
+  blink::Node* node = nullptr;
+  NtsWebStatus status = realm->Nodes().Resolve(
+      node_handle, nts::blink_bridge::WebTypeId::kNode, &node);
+  if (status != NTS_WEB_OK) return VoidFailure(status);
+
+  /* Script textContent has an additional Trusted Types binding path. Until the
+   * binding-neutral Trusted Types conversion is crossed, refuse that one
+   * concrete shape rather than silently bypass its policy. Ordinary elements
+   * (including this fixture's h1/button) use Node::setTextContent directly. */
+  if (blink::IsA<blink::HTMLScriptElement>(*node)) {
+    return VoidFailure(NTS_WEB_OPERATION_DISABLED);
+  }
+
+  blink::String text;
+  status = DecodeUtf8(text_utf8, &text);
+  if (status != NTS_WEB_OK) return VoidFailure(status);
+
+  node->setTextContent(text);
+  return VoidSuccess();
+}
+
+extern "C" NtsWebVoidResult nts_web_node_append_child(
+    NtsWebRealm* realm,
+    NtsWebHandle parent_handle,
+    NtsWebHandle child_handle) {
+  const NtsWebStatus realm_status = CheckRealm(realm);
+  if (realm_status != NTS_WEB_OK) return VoidFailure(realm_status);
+
+  blink::Node* parent = nullptr;
+  blink::Node* child = nullptr;
+  NtsWebStatus status = realm->Nodes().Resolve(
+      parent_handle, nts::blink_bridge::WebTypeId::kNode, &parent);
+  if (status != NTS_WEB_OK) return VoidFailure(status);
+  status = realm->Nodes().Resolve(
+      child_handle, nts::blink_bridge::WebTypeId::kNode, &child);
+  if (status != NTS_WEB_OK) return VoidFailure(status);
+
+  auto* container = blink::DynamicTo<blink::ContainerNode>(parent);
+  if (!container || !blink::IsA<blink::Element>(*parent) ||
+      !blink::IsA<blink::Element>(*child)) {
+    return VoidFailure(NTS_WEB_OPERATION_DISABLED);
+  }
+
+  /* This is the exact no-failure subset needed by generated createElement ->
+   * appendChild code. Outside it we refuse until ContainerNode's exception
+   * carrier is binding-neutral, rather than call ASSERT_NO_EXCEPTION on a
+   * shape that could raise HierarchyRequestError/NotFoundError. */
+  if (child->parentNode() || child->ContainsIncludingHostElements(*parent) ||
+      !parent->ChildTypeAllowed(child->getNodeType())) {
+    return VoidFailure(NTS_WEB_OPERATION_DISABLED);
+  }
+
+  if (container->AppendChild(child) != child) {
+    return VoidFailure(NTS_WEB_OPERATION_DISABLED);
+  }
+  return VoidSuccess();
 }
