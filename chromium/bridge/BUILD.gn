@@ -45,3 +45,16 @@ source_set("nts_blink_bridge") {
     "//third_party/blink/renderer/platform",
   ]
 }
+
+# The acceptance application remains plain C. It is the source shape ScriptC's
+# C backend will eventually replace; no C++ rewrite is used for the Chromium
+# harness.
+source_set("nts_counter_example") {
+  sources = [
+    "counter/app.c",
+    "counter/app.h",
+  ]
+
+  include_dirs = [ "." ]
+  deps = [ ":nts_blink_bridge" ]
+}
