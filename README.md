@@ -43,14 +43,35 @@ Chromium rendering / compositor / GPU
 - Browser-process authority is exposed only through typed asynchronous capabilities; DOM objects and raw pointers never cross the process boundary.
 - The public native ABI is statically generated from reached operations. There is no `invoke(name, args)` or string-dispatch fallback.
 
-## Binding inputs
+## Binding architecture
 
 Two descriptions deliberately have different jobs:
 
 - TypeScript's `lib.dom.d.ts` defines what ordinary TypeScript source can say and how it is type-checked.
-- Blink's WebIDL database, from the exact pinned Chromium revision, defines the implementation-facing contract: WebIDL scalar/string conversions, nullability, dictionaries and unions, exposure/runtime conditions, exception behavior, implementation names, execution-context requirements, reactions, promises, callbacks, and related extended attributes.
+- Blink's normalized WebIDL database, from the exact pinned Chromium revision, defines the implementation-facing contract: WebIDL conversions, inheritance, dictionaries and unions, exposure/runtime conditions, implementation names, exception behavior, callbacks, promises and extended attributes.
 
-The WebIDL binding generator joins reached `lib.dom.d.ts` members to the corresponding pinned Blink IDL definitions and emits a closed native binding manifest plus the C/C++ capsule surface. Application developers do not consume a replacement DOM declaration library.
+The final generator is not an independent raw-WebIDL compiler. Native TypeScript becomes a sibling backend to Chromium's existing Blink bindings pipeline:
+
+```text
+Blink IDL
+   |
+Chromium web_idl compiler
+   |
+web_idl_database.pickle
+   |
+   +---- Blink bind_gen --> V8 bindings
+   |
+   +---- nts_bind_gen ---> Native Web schema
+                           typed C ABI
+                           direct Blink C++ capsules
+                           coverage/refusal report
+```
+
+The deterministic Native Web schema is the contract between Chromium and ScriptC. ScriptC maps resolved `lib.dom.d.ts` symbols to schema operations, performs reachability and emits an application operation-selection manifest. Only selected capsules and their transitive type/callback dependencies are linked.
+
+API-specific files such as the current handwritten `nts_blink_dom.cc` are executable generator prototypes. Realm, Oilpan handle identity, callback ingress, subscription ownership, promise scheduling and lifecycle remain permanent handwritten runtime machinery.
+
+See [`docs/bindings-generation.md`](docs/bindings-generation.md) for the complete generator/runtime split and [`docs/records/0003-first-class-blink-bindings-backend.md`](docs/records/0003-first-class-blink-bindings-backend.md) for the decision record.
 
 ## Current implementation
 
@@ -105,9 +126,9 @@ Run the built `content_shell` with:
 --native-typescript-counter file:///absolute/path/to/electron-like/examples/counter/index.html
 ```
 
-See [`docs/running.md`](docs/running.md) for the exact workflow.
+See [`docs/running.md`](docs/running.md) for the exact counter workflow.
 
-The interactive call chain is now represented as:
+The interactive call chain is represented as:
 
 ```text
 plain C counter
@@ -125,10 +146,35 @@ plain C counter
 
 No V8 object, V8 function, JavaScript source evaluation, property lookup, or generic command bridge participates in that Native TypeScript/Web API path. Stock Chromium still contains and initializes V8 for its ordinary JavaScript realm; this experiment does not route Native TypeScript through it.
 
+## Development direction
+
+The next substantial work is a multi-repository compiler/generator loop rather than another handwritten DOM wrapper:
+
+```text
+electron-like
+  -> nts_bind_gen + Blink runtime/host + Chromium tests
+
+ScriptC
+  -> Native Web schema import + lib.dom symbol mapping
+  -> Web-operation reachability + C/LLVM lowering
+
+native-typescript
+  -> Chromium target/provider + artifact orchestration
+```
+
+A local coding agent with simultaneous access to those repositories and a full Chromium checkout is the recommended environment. See [`docs/development-workflow.md`](docs/development-workflow.md).
+
 ## Repository role
 
-This repository owns the Chromium experiment and eventually the Chromium target runtime/capsules. Generic TypeScript semantics, ownership analysis, callback semantics, promise/microtask machinery, native handles, and Native IR belong in `native-typescript` / the ScriptC fork when the experiment proves that a reusable primitive is required.
+This repository owns Chromium-specific generator, runtime, patch, product-host and conformance work. Generic TypeScript semantics, ownership analysis, callback semantics, promise/microtask machinery, native handles and Native IR belong in `native-typescript` / ScriptC when they are target-independent.
 
 The standalone CMake build validates the public C contract and target-neutral runtime pieces. The Blink adapter is compiled inside the pinned Chromium GN/Ninja build, where Blink implementation types are available.
 
-See [`docs/architecture.md`](docs/architecture.md) for the normative design, [`docs/chromium-seams.md`](docs/chromium-seams.md) for pinned Chromium implementation evidence, [`docs/records/`](docs/records/) for dated findings, and [`include/nts_web.h`](include/nts_web.h) for the C ABI contract.
+Documentation:
+
+- [`docs/architecture.md`](docs/architecture.md) — normative final architecture;
+- [`docs/bindings-generation.md`](docs/bindings-generation.md) — WebIDL/schema/generator design;
+- [`docs/development-workflow.md`](docs/development-workflow.md) — local multi-repository agent workflow;
+- [`docs/chromium-seams.md`](docs/chromium-seams.md) — pinned Chromium implementation evidence;
+- [`docs/records/`](docs/records/) — dated decisions and findings;
+- [`include/nts_web.h`](include/nts_web.h) — current experimental C ABI.
