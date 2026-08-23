@@ -18,6 +18,13 @@ source_set("nts_blink_bridge") {
 
   include_dirs = [ "." ]
 
+  configs += [
+    "//third_party/blink/renderer:config",
+    "//third_party/blink/renderer:non_test_config",
+    "//third_party/blink/renderer:inside_blink",
+    "//third_party/blink/renderer/core:blink_core_pch",
+  ]
+
   deps = [
     "//base",
     "//third_party/blink/renderer/core",
