@@ -2,6 +2,19 @@
 # Native TypeScript direct-Blink bridge. This file is overlaid into
 # //third_party/blink/renderer/native_typescript by scripts/apply_chromium.py.
 
+# Portable C runtime state used by generated/native Web API calls. Keeping this
+# separate prevents Blink's C++ PCH/configuration from becoming part of the C
+# contract we eventually expect ScriptC-generated output to link against.
+source_set("nts_web_runtime") {
+  sources = [
+    "runtime/nts_handle_table.c",
+    "runtime/nts_handle_table.h",
+    "runtime/nts_web_exception.c",
+  ]
+
+  include_dirs = [ "." ]
+}
+
 source_set("nts_blink_bridge") {
   sources = [
     "nts_blink_dom.cc",
@@ -11,9 +24,6 @@ source_set("nts_blink_bridge") {
     "nts_blink_node_registry.h",
     "nts_blink_realm.cc",
     "nts_blink_realm.h",
-    "runtime/nts_handle_table.c",
-    "runtime/nts_handle_table.h",
-    "runtime/nts_web_exception.c",
   ]
 
   include_dirs = [ "." ]
@@ -26,6 +36,7 @@ source_set("nts_blink_bridge") {
   ]
 
   deps = [
+    ":nts_web_runtime",
     "//base",
     "//third_party/blink/renderer/core",
     "//third_party/blink/renderer/platform",
