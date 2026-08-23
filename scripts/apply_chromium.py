@@ -37,6 +37,13 @@ def copy_overlay(checkout: pathlib.Path) -> pathlib.Path:
     for name in ("nts_handle_table.c", "nts_handle_table.h", "nts_web_exception.c"):
         shutil.copy2(ROOT / "src" / "runtime" / name,
                      runtime_destination / name)
+
+    counter_destination = destination / "counter"
+    counter_destination.mkdir(parents=True, exist_ok=True)
+    for name in ("app.c", "app.h"):
+        shutil.copy2(ROOT / "examples" / "counter" / name,
+                     counter_destination / name)
+
     return destination
 
 
@@ -73,7 +80,8 @@ def main() -> None:
 
     destination = copy_overlay(checkout)
     print(f"installed Native TypeScript Blink bridge at {destination}")
-    print("GN target: //third_party/blink/renderer/native_typescript:nts_blink_bridge")
+    print("GN bridge: //third_party/blink/renderer/native_typescript:nts_blink_bridge")
+    print("GN counter: //third_party/blink/renderer/native_typescript:nts_counter_example")
 
 
 if __name__ == "__main__":
