@@ -1,176 +1,245 @@
 # Direct Blink architecture
 
-Status: normative starting architecture
+Status: normative target architecture
 
 ## Mission
 
-Run ordinary TypeScript compiled ahead of time to native code directly inside a Chromium renderer and expose the real Blink DOM/Web API surface without routing Native TypeScript calls through V8 or JavaScript.
+Run ordinary TypeScript compiled ahead of time to native code inside a Chromium renderer and expose the real Blink DOM/Web API surface without routing Native TypeScript calls through V8, JavaScript, a remote DOM proxy or a generic command bridge.
 
-The renderer is not an Electron renderer with JavaScript removed. It is a native Blink host with a Native TypeScript runtime as a first-class binding runtime.
+The product is not Electron with the JavaScript runtime removed. It is a Chromium content embedder in which Native TypeScript is a first-class Blink binding runtime.
 
-## System shape
+## Core invariants
+
+1. Native TypeScript Web API calls execute in the sandboxed renderer process on the sequence that owns the Blink execution context.
+2. Synchronous Web APIs remain local synchronous calls; they do not cross browser/renderer IPC.
+3. Generated application code never observes a Blink C++ pointer.
+4. V8 values, V8 DOM wrappers, JavaScript functions and evaluated source are not carriers in the Native TypeScript binding path.
+5. TypeScript source uses the standard DOM declaration libraries; no framework-specific DOM dialect is required.
+6. Blink's normalized WebIDL database from the exact Chromium revision is the implementation-semantic source of truth.
+7. Web API entry points are typed generated C symbols. There is no `invoke(name, values)` fallback.
+8. Realm, handle, callback, promise and shutdown behavior are explicit runtime contracts.
+9. Unsupported reached semantics fail the build or operation precisely; they are never silently approximated.
+10. Browser-process authority is available only through finite typed asynchronous capabilities.
+
+## Final system shape
 
 ```text
 ordinary TypeScript + lib.dom.d.ts
-              |
-              v
-      ScriptC / Native IR
-              |
-         C or LLVM
-              |
-              v
-       generated native C
-              |
-       typed extern "C"
-              |
-              v
- generated Blink C++ capsule
-              |
-              v
-             Blink
-              |
-              v
- Chromium renderer/compositor/GPU
+                |
+                v
+       ScriptC frontend/checker
+                |
+     reachability + Native Web IR
+                |
+                | operation identities from Native Web schema
+                v
+          C or LLVM lowering
+                |
+                v
+       generated native application
+                |
+          typed extern "C" ABI
+                |
+                v
+ generated Native TypeScript Blink capsules
+                |
+     binding-neutral Blink implementation seams
+                |
+                v
+       real Blink DOM / Web APIs
+                |
+                v
+ Chromium layout / paint / compositor / GPU
 ```
 
-Browser-process services remain across Chromium's process boundary:
+The process boundary remains Chromium's:
 
 ```text
-trusted browser process
+┌─────────────────────────────────────────────┐
+│ trusted browser process                     │
+│                                             │
+│ windowing, navigation, permissions,         │
+│ application lifecycle, privileged services  │
+└───────────────────┬─────────────────────────┘
+                    │ typed asynchronous Mojo/capability calls
+┌───────────────────▼─────────────────────────┐
+│ sandboxed renderer process                  │
+│                                             │
+│ Blink + NtsWebRealm + ScriptC runtime       │
+│ + compiled application + generated capsules │
+└─────────────────────────────────────────────┘
+```
+
+DOM handles and raw pointers never cross that line.
+
+## Semantic authorities
+
+Three different descriptions have different jobs.
+
+### TypeScript standard libraries
+
+`lib.dom.d.ts` and related TypeScript libraries define what application source can say and how the TypeScript checker resolves names, overloads and source types.
+
+They are the source contract, not the Blink ABI.
+
+### Blink WebIDL database
+
+Chromium's `web_idl` compiler parses and normalizes Blink's IDL into `web_idl_database.pickle`. That database includes interface composition, inheritance, overloads, dictionaries, unions, callbacks, extended attributes, exposure and implementation metadata.
+
+It defines the exact semantic input for the pinned Chromium backend.
+
+### Native Web schema
+
+A Native TypeScript bindings backend, `nts_bind_gen`, consumes Chromium's normalized database and emits a deterministic Native Web schema.
+
+The schema is the contract between Chromium and ScriptC. It records:
+
+- canonical type/member identities;
+- WebIDL conversions and defaults;
+- implementation call plans;
+- exposure/runtime conditions;
+- exception, callback and promise requirements;
+- generated ABI identities;
+- supported/refused status;
+- Chromium/generator/runtime provenance.
+
+ScriptC consumes this schema. It does not import Chromium's Python pickle directly.
+
+## First-class Blink bindings backend
+
+Native TypeScript is implemented as a sibling backend to Blink's existing V8 generator:
+
+```text
+Blink *.idl
+    |
+    v
+Chromium web_idl compiler
+    |
+    v
+web_idl_database.pickle
+    |
+    +-----------------------------+
+    |                             |
+    v                             v
+Blink bind_gen                 nts_bind_gen
+    |                             |
+    v                             +-- Native Web schema
+V8 bindings                      +-- C ABI declarations
+                                 +-- direct Blink C++ capsules
+                                 +-- type/callback metadata
+                                 +-- coverage/refusal report
+```
+
+The project does not maintain a second raw-IDL compiler. `nts_bind_gen` may reuse target-neutral Chromium code-emission utilities, but it remains separate from V8-specific conversion logic.
+
+Detailed generation architecture is specified in [`bindings-generation.md`](bindings-generation.md).
+
+## Revision-wide schema and application selection
+
+A Chromium revision first produces a revision-wide schema. ScriptC then emits an application-specific operation selection based on actual reachability.
+
+```text
+pinned Chromium -> Native Web schema
+                         |
+TypeScript app ----------+
         |
-        | typed asynchronous capabilities / Mojo transport
         v
-sandboxed renderer process
-  Blink + NtsWebRealm + ScriptC runtime + compiled application
+ScriptC reachability/type resolution
+        |
+        +-- compiled C/LLVM object
+        +-- app.webops selection manifest
+                         |
+                         v
+selected generated Blink capsules
+                         |
+                         v
+final Chromium renderer product
 ```
 
-Synchronous DOM operations never cross that process boundary.
+The operation selection is closed over required dictionaries, unions, callbacks, return types and runtime features. Unreached bindings are not required in the final application artifact.
 
-## Source API ownership
+A development build may use a curated superset, but source/member resolution remains static and typed.
 
-TypeScript's standard DOM libraries are the public source contract. Application source uses `document`, `Window`, `Element`, `EventTarget`, `fetch`, and related standard declarations directly.
+## Native Web realm
 
-No Native-TypeScript-specific DOM declaration package is introduced merely to make the target work.
-
-`lib.dom.d.ts` does not define the native Blink ABI. It describes the TypeScript-visible shape, while Blink's WebIDL database from the exact pinned Chromium revision carries implementation-facing semantics that the TypeScript declarations intentionally erase.
-
-The binding pipeline therefore joins two inputs:
+`NtsWebRealm` binds exactly one ScriptC runtime instance to one Blink execution realm.
 
 ```text
-lib.dom.d.ts ----------------------- source API identity/types
-       \
-        +--> reached-member join --> Native Web Binding Manifest
-       /
-Blink WebIDL database ------------- exact Blink/WebIDL semantics
+Blink ExecutionContext
+        ↕
+    NtsWebRealm
+        ↕
+ScriptC RuntimeInstance
 ```
 
-The manifest is closed, immutable build input. It contains only reached operations and all semantic facts required to lower them.
+The realm owns or references:
 
-## WebIDL role
-
-The Chromium target consumes Chromium's own generated WebIDL database rather than treating WebIDL as a user-facing language.
-
-The binding generator extracts, as applicable:
-
-- exact interface and member identity;
-- overload and optional-argument structure;
-- WebIDL scalar conversion policy;
-- `DOMString`, `USVString`, `ByteString`, enum, dictionary, union and sequence semantics;
-- nullable/optional distinctions;
-- interface inheritance and exposure sets;
-- implementation method/name overrides;
-- execution-context requirements;
-- exception behavior;
-- callback/event shapes;
-- promise/async result behavior;
-- custom-element reactions and other reached extended attributes;
-- runtime/feature gating.
-
-Unsupported reached semantics fail the build precisely. There is no dynamic fallback.
-
-## Binding-neutral Blink realm
-
-Native TypeScript must not fabricate a V8 `ScriptState` or enter V8 wrappers to satisfy Blink APIs. Where current Blink implementation seams assume V8 state, the Chromium integration introduces a binding-neutral realm contract beneath those assumptions.
-
-Conceptually:
-
-```text
-                   BlinkBindingRealm
-                    /            \
-            V8 binding realm    NtsWebRealm
-```
-
-`NtsWebRealm` binds exactly one Native TypeScript runtime instance to exactly one Blink execution realm.
-
-It owns or references:
-
-- the Blink `ExecutionContext`;
-- the owning renderer sequence/task runner;
+- the current Blink `ExecutionContext` and `Document` where applicable;
+- the renderer owner sequence/task runner;
 - the ScriptC runtime instance;
-- the DOM/native handle registry;
-- callback registrations;
-- native promise resolver integration;
+- the generic Blink interface-object registry;
+- callback tokens and ingress gateway;
+- event/subscription resources;
+- native promise settlement integration;
+- task/microtask checkpoint integration;
 - exception conversion state;
-- realm identity and lifecycle state.
+- realm identity, feature state and lifecycle.
 
-The invariant is:
-
-> Native TypeScript calls Blink directly. V8 is neither the value carrier nor the callback/promise/exception carrier for this realm.
+`NtsWebRealm` is permanent runtime infrastructure. It is not generated per WebIDL interface.
 
 ## Runtime ownership
 
-One `NtsWebRealm` has one ScriptC owner executor: the Chromium/Blink renderer sequence that owns its execution context.
-
-Only that sequence may:
+Only the realm owner sequence may:
 
 - enter compiled TypeScript;
 - access ScriptC heap objects;
-- resolve or mutate DOM handles;
-- call thread-affine Blink APIs;
-- deliver DOM event callbacks;
-- settle ScriptC promises from Blink completions;
-- release realm-owned Oilpan roots;
-- destroy the realm.
+- resolve or mutate Blink handles;
+- call thread-affine Blink implementations;
+- dispatch native callbacks;
+- settle ScriptC promises;
+- alter subscription state;
+- release Oilpan roots;
+- destroy the runtime/realm.
 
-Wrong-sequence access is a checked failure, never an implicit scheduler hop for synchronous DOM APIs.
+Wrong-sequence access is a checked failure. A synchronous DOM API never silently posts to another sequence.
+
+Chromium remains the host scheduler. ScriptC does not run a competing browser event loop.
 
 ## Realm lifetime
 
-A window/document runtime is tied to Blink execution-context lifetime, not renderer-process lifetime.
+A window/document Native TypeScript runtime follows Blink execution-context lifetime, not renderer-process lifetime.
 
 ```text
 ExecutionContext created
         |
         v
-NtsWebRealm created
+NtsWebRealm + ScriptC runtime created
         |
         v
 compiled application entry
         |
         v
-DOM/events/promises/tasks
+DOM / events / tasks / promises
         |
- navigation / detach / context destruction
+navigation, frame detach or context shutdown
         |
         v
-stop admissions
-cancel subscriptions
-settle/reject permitted outstanding async work
-invalidate every handle generation
+stop new admissions
+cancel native subscriptions
+reject/cancel permitted pending async work
+invalidate all handle generations
 release Oilpan roots on owner sequence
 stop ScriptC runtime
         |
         v
-NtsWebRealm destroyed
+realm destroyed
 ```
 
-Workers use the same model with their own execution contexts and runtime instances.
+Workers use the same ownership model with their own execution contexts and runtime instances.
 
 ## Native object model
 
-Blink pointers never appear in generated C.
-
-Generated code observes opaque handles:
+Generated C sees opaque handles:
 
 ```c
 typedef struct {
@@ -179,193 +248,363 @@ typedef struct {
 } NtsWebHandle;
 ```
 
-A handle is scoped to one realm and has a static WebIDL/native type identity in the binding contract.
+A handle is scoped to one realm and has a generated WebIDL type identity.
 
-The Blink-side registry maps handle entries to GC-aware Blink references and maintains reverse identity interning so repeated acquisition of the same Blink object yields one logical native identity.
+The final registry is a generic Blink interface-object registry, not a Node-only registry. It associates live native handles with Oilpan-rooted Blink interface objects and generated type descriptors.
 
-The registry must preserve:
+It preserves:
 
 - realm affinity;
 - generation checking;
-- type checking/upcasts according to WebIDL inheritance;
-- deterministic invalidation on context destruction;
-- alias identity;
-- exact retain/release accounting for ScriptC-visible native references.
+- exact type validation and generated WebIDL upcasts;
+- identity interning;
+- deterministic invalidation;
+- retain/release accounting for ScriptC-visible references;
+- release of Oilpan roots when the final native edge disappears.
 
-Blink/Oilpan owns object memory. The realm registry owns only the strong Oilpan edges required by live Native TypeScript handles.
+Blink/Oilpan owns object memory. The Native TypeScript registry owns only the strong GC edges required by live native handles.
 
-## C ABI
+Repeated acquisition of the same Blink object returns the same logical native identity. Navigation cannot make an old handle refer to an object in a new realm.
 
-The C ABI is generated and statically identified. It exists so both ScriptC's readable C backend and LLVM backend can target the same Chromium capsule semantics.
+## Typed C ABI
 
-Representative calls:
+The generated C ABI is the compiler/backend seam.
+
+It permits ScriptC's readable C backend and LLVM backend to target identical semantics while remaining independent of Chromium's C++ ABI.
+
+Representative generated calls:
 
 ```c
-NtsWebHandleResult nts_web_document_create_element(
+NtsWebHandleResult nts_web_Document_createElement_1(
     NtsWebRealm *realm,
-    NtsWebHandle document,
-    NtsUtf8View local_name);
+    NtsWebHandle receiver,
+    NtsDomStringView local_name);
 
-NtsWebVoidResult nts_web_node_append_child(
+NtsWebVoidResult nts_web_Node_appendChild_1(
     NtsWebRealm *realm,
-    NtsWebHandle parent,
+    NtsWebHandle receiver,
     NtsWebHandle child);
 ```
 
-There is no generic equivalent of:
+The exact symbol names and ABI records are generated from the Native Web schema.
+
+There is no runtime equivalent of:
 
 ```text
-invoke(handle, "createElement", args)
+invoke(handle, "createElement", dynamic_args)
 get(handle, "body")
 eval(source)
 ```
 
-Member resolution occurs before code generation.
+Member and overload resolution occur before code generation. LTO may inline the C/C++ capsule boundary without weakening it as an architectural contract.
 
-## Generated C++ capsules
+## Generated Blink capsules
 
-The implementation of the C ABI is generated C++ compiled inside the pinned Chromium build.
+A generated capsule may:
 
-Its allowed responsibility is exact target realization:
-
-- resolve checked native handles;
-- perform the WebIDL conversion already selected by the manifest;
+- validate realm/sequence state;
+- resolve typed native handles;
+- materialize exact WebIDL argument conversions;
+- apply exposure/runtime-feature checks;
+- construct binding-neutral context/exception/promise carriers;
 - call the exact Blink implementation entry;
-- materialize a returned Blink object as a checked native handle;
-- translate the target's binding-neutral exception/result state into the native ABI.
+- intern returned interface objects;
+- translate values or failures into the typed native ABI.
 
-The capsule does not decide whole-program lifetime, escape, scheduling policy, or language semantics that belong to ScriptC/Native IR.
+It may not decide:
 
-## Values and conversions
+- TypeScript whole-program reachability;
+- closure escape/lifetime policy;
+- ScriptC heap ownership;
+- application process partitioning;
+- browser authority policy;
+- generic runtime scheduling semantics.
 
-The WebIDL binding family maps WebIDL concepts into a closed Native IR/native ABI algebra.
+Those belong to ScriptC, Native IR, the realm runtime or the product host.
 
-Examples:
+## WebIDL/native values
+
+WebIDL maps into a closed Native IR/ABI algebra.
 
 ```text
 boolean                    -> bool
-integer WebIDL types       -> declared checked/exact numeric conversion
-float/double               -> declared number conversion
-DOMString                  -> code-unit-preserving string projection
-USVString                  -> Unicode-scalar projection
-ByteString                 -> checked byte-string projection
-interface T                -> handle<T>
-T?                         -> nullable handle<T>
-sequence<T>                -> native array/span projection
+integer WebIDL types       -> exact generated numeric conversion
+float/double               -> exact generated numeric conversion
+DOMString                  -> code-unit-preserving string form
+USVString                  -> Unicode-scalar string form
+ByteString                 -> checked byte string
+interface T                -> typed handle<T>
+T?                         -> nullable handle/optional form
+sequence<T>                -> typed span or owned array
 dictionary                 -> generated record + presence bits
-enum                       -> closed enum/string projection
+enum                       -> generated closed value
 union                      -> generated tagged union
-callback                   -> ScriptC callback token
-Promise<T>                 -> ScriptC Promise<T>
-ArrayBuffer/typed arrays   -> explicit native buffer/view forms
+callback                   -> typed ScriptC callback token
+Promise<T>                 -> ScriptC promise/resolver contract
+ArrayBuffer/typed arrays   -> explicit buffer ownership/view forms
 ```
 
-The compiler may remove checks only when its static analysis proves the declared conversion cannot fail.
+The current UTF-8 experiment ABI is scaffolding. The final generator must preserve each WebIDL string type's actual semantics.
+
+The compiler may eliminate a conversion check only when static analysis proves it cannot fail.
+
+## Horizontal Blink seams
+
+Scalability depends on neutralizing a small number of binding primitives rather than adding Native TypeScript overloads to every API.
+
+### Exception sink
+
+The preferred final design keeps Blink implementation methods accepting a common exception-state object while making that object delegate to a pluggable sink:
+
+```text
+Blink implementation
+       |
+ExceptionState
+   /       \
+V8 sink   NTS sink
+```
+
+Existing V8 behavior remains. The Native TypeScript sink records DOMException, TypeError, RangeError, SyntaxError and security-safe messages without creating V8 values.
+
+The current binding-neutral `Document.createElement` overload proves the cut but is not the desired per-member pattern.
+
+### Binding realm/context
+
+Operations that currently require `ScriptState` should, where their semantics permit, depend on a binding-neutral realm/context abstraction that supplies:
+
+- `ExecutionContext`;
+- realm identity;
+- owner task runner;
+- microtask integration;
+- exception sink creation;
+- promise resolver creation.
+
+V8 `ScriptState` and `NtsWebRealm` become sibling adapters.
+
+An API that genuinely consumes or produces arbitrary JavaScript values remains unsupported until its semantics are represented in the native type algebra.
+
+### Promise resolver
+
+Async Blink implementations should settle a binding-neutral resolver/completion object:
+
+```text
+Blink async completion
+        |
+WebPromiseResolver<T>
+     /              \
+V8 adapter       ScriptC adapter
+```
+
+Native TypeScript does not construct an intermediate V8 Promise.
+
+### Native callbacks
+
+Blink's native `EventListener` path is used directly. The runtime owns callback-token lifetime and subscription cancellation; generated callback stubs marshal each WebIDL callback signature.
+
+Other callback interfaces use generated Oilpan-aware native implementations that enter ScriptC through the same realm gateway.
+
+## Exceptions
+
+No C++ exception unwinds through generated C or ScriptC frames.
+
+A binding-neutral failure is translated into a typed native result and then into ScriptC's language exception model.
+
+The observable distinctions required by the reached API are retained, including:
+
+- DOMException name, legacy code and safe message;
+- TypeError;
+- RangeError;
+- SyntaxError;
+- security/permission failure;
+- operation disabled by exposure/runtime feature;
+- explicit target/runtime internal failure.
 
 ## Events and callbacks
 
-DOM events are native callback registrations, not JavaScript listener functions.
+For:
 
-Conceptually:
+```ts
+button.addEventListener("click", callback);
+```
+
+the architecture is:
 
 ```text
 compiled closure
       |
-ScriptC callback token
+typed ScriptC callback token
       |
-Nts native EventListener adapter
+generated EventListener argument capsule
+      |
+generic native Blink EventListener adapter
       |
 blink::EventTarget
 ```
 
-On dispatch, Blink invokes the native listener on the realm owner sequence. Event/interface payloads are represented as native handles or transport-safe values according to their generated contract, and the callback enters compiled TypeScript directly.
+On dispatch, Blink invokes the native listener on the realm sequence. The generated callback stub converts the reached event signature into handles/native values and enters compiled TypeScript.
 
-A registration has explicit ownership and cancellation. Removing a listener tears down the Blink registration before releasing the callback token. Realm destruction cancels all remaining registrations before callback storage is reclaimed.
+A subscription is an owned native resource. Removal unregisters the exact listener identity before releasing the callback token. Realm shutdown cancels all remaining subscriptions before callback storage is destroyed.
 
-## Exceptions
+## Promises and task ordering
 
-Native TypeScript does not create a V8 exception object and translate it back.
+`Promise<T>` maps directly to ScriptC's promise model through the binding-neutral resolver.
 
-Blink implementation entry points used by the Native TypeScript binding must expose a binding-neutral failure sink/result capable of representing the Web-observable distinction required by the reached API, including as applicable:
+Chromium owns task scheduling for input, timers, animation, networking and rendering. ScriptC jobs participate in a declared realm microtask checkpoint.
 
-- `TypeError`;
-- `RangeError`;
-- `DOMException` name/code/message;
-- operation-disabled/security failures;
-- internal target failure mapped to an explicit runtime error.
+The implementation must test Web-observable ordering across:
 
-The generated capsule translates that directly into ScriptC exception semantics.
+- current native application turn;
+- Blink task completion;
+- native callback/promise ingress;
+- ScriptC promise settlement;
+- ScriptC microtasks;
+- subsequent Chromium tasks and rendering updates.
 
-No foreign C++ exception unwinds through generated C/ScriptC frames.
-
-## Promises and asynchronous Web APIs
-
-`Promise<T>` in WebIDL maps to ScriptC's promise model directly.
-
-The implementation seam beneath a reached Blink async API must be binding-neutral: a native completion/resolver settles the ScriptC promise on the owning realm sequence without creating an intermediate V8 Promise.
-
-The Chromium renderer scheduler remains the host scheduler. ScriptC does not own a competing browser event loop.
-
-Task/microtask integration must preserve Web-observable ordering. Native TypeScript promise jobs participate in the realm's browser microtask checkpoint contract, while task sources such as timers, network completion, animation, and input remain Chromium/Blink task sources.
+"Eventually resolved" is insufficient evidence.
 
 ## Browser-process capabilities
 
-Privileged operations remain outside the sandboxed renderer unless Chromium's architecture already implements them safely there.
+Privileged application features remain in the trusted browser process unless Chromium already implements them safely in the renderer.
 
-A renderer reaches trusted host services through finite typed capabilities, transported over Chromium IPC/Mojo or an equivalent generated transport.
+Examples include:
 
-Cross-process operations are asynchronous. Raw pointers, Blink objects, ScriptC closures and arbitrary object graphs never cross the boundary.
+- filesystem authority;
+- process execution;
+- application windows;
+- native menus and dialogs;
+- unrestricted OS integration;
+- application update/install services.
+
+The renderer calls finite typed asynchronous capabilities over Mojo or an equivalent generated transport. DOM objects, Blink pointers and ScriptC closures never cross the process boundary.
+
+## Generated, runtime and host source ownership
+
+Final Chromium-side source is divided into three categories:
+
+```text
+third_party/blink/renderer/native_typescript/
+├── runtime/       # handwritten permanent mechanisms
+├── generated/     # nts_bind_gen outputs
+└── host/          # product/embedder integration
+```
+
+### Permanent runtime
+
+- realm/lifecycle;
+- generic interface-object registry;
+- callback gateway;
+- subscription registry;
+- promise/microtask integration;
+- exception adapter;
+- conversion primitives;
+- runtime compatibility checks.
+
+### Generated
+
+- per-member C ABI declarations/definitions;
+- direct Blink call capsules;
+- type IDs and inheritance;
+- dictionaries, unions and enums;
+- callback signature stubs;
+- operation selection/build source lists;
+- coverage/refusal/provenance data.
+
+### Product host
+
+- renderer-frame/application startup;
+- compiled application loading/linking;
+- browser-process capabilities;
+- window/application lifecycle;
+- origin and admission policy.
+
+The current counter-specific host is temporary experiment scaffolding.
+
+## Current prototype mapping
+
+The present source is an executable specification of the target boundary.
+
+| Current source | Target disposition |
+| --- | --- |
+| `nts_blink_dom.cc` | replaced operation by operation by generated capsules |
+| `nts_blink_events.cc` | generated overload/conversion capsules plus permanent generic event runtime |
+| `nts_blink_event_listener.*` | permanent generic runtime category |
+| `nts_blink_node_registry.*` | generalized into permanent interface-object registry; type metadata generated |
+| `nts_blink_subscription_registry.*` | permanent runtime category |
+| `nts_blink_realm.*` | permanent runtime category |
+| `nts_blink_counter_host.*` | removed when the real renderer application host exists |
+| `chromium/patches/*` | reduced toward horizontal binding-neutral seams and product integration |
+
+Handwritten operation wrappers remain until generated replacements pass equal or stronger tests.
 
 ## Build architecture
 
-The final build consumes an exact Chromium revision.
-
-Conceptually:
+The reproducible build is:
 
 ```text
-Chromium source + generated WebIDL database
-                 |
-                 +-- Native Web binding generator
-                 |      |
-                 |      +-- manifest
-                 |      +-- C header
-                 |      +-- Blink C++ capsules
-                 |
-TypeScript + lib.dom.d.ts
-                 |
-          ScriptC compiler
-                 |
-           C/LLVM objects
-                 |
-                 +----------------+
-                                  v
-                       Chromium GN/Ninja graph
-                                  |
-                                  v
- browser process + sandboxed renderer product
+pinned Chromium source
+        |
+        +-- web_idl_database
+        |       |
+        |       +-- nts_bind_gen schema
+        |                       |
+TypeScript + lib.dom.d.ts       |
+        |                       |
+        +-- ScriptC ------------+
+              |        |
+              |        +-- app.webops selection
+              +----------- C/LLVM object
+                           |
+nts_bind_gen selected capsules
+                           |
+handwritten NTS Blink runtime
+                           |
+Chromium GN/Ninja graph
+                           |
+                           v
+browser process + sandboxed renderer product
 ```
 
-Generated adapters are declared build artifacts with the exact Chromium revision, WebIDL database digest, source declaration digest and compiler contract version in their cache/provenance identity.
+Generated artifacts include the Chromium commit, WebIDL database digest, schema format, generator version, runtime contract and ScriptC ABI version in their identity.
 
-## Compatibility
+The recommended multi-repository implementation workflow is documented in [`development-workflow.md`](development-workflow.md).
 
-DOM compatibility claims are tied to:
+## Compatibility and conformance
 
-- an exact Chromium revision/version;
-- the matching TypeScript DOM declaration revision used at compile time;
-- a recorded binding coverage report;
-- browser/Web Platform conformance tests for the supported reached surface.
+A compatibility claim is tied to:
 
-Source-level resemblance is not sufficient evidence of compatibility.
+- an exact Chromium revision;
+- an exact Native Web schema digest;
+- a compatible ScriptC/runtime ABI version;
+- the TypeScript standard library revision used for source checking;
+- an application operation-selection manifest;
+- a coverage/refusal report;
+- compile and behavioral test evidence.
+
+Required test categories include:
+
+- schema and generator golden tests;
+- generated capsule compile tests;
+- DOM identity and invalidation;
+- DOMException/type/range error translation;
+- event registration, delivery and cancellation;
+- navigation/shutdown cleanup;
+- promise/task/microtask ordering;
+- feature/exposure guards;
+- relevant Web Platform Tests or equivalent semantic comparisons.
+
+Source-level resemblance to the DOM API is not compatibility evidence.
 
 ## Non-goals
 
 The architecture does not:
 
-- emulate DOM calls in another process;
-- expose Blink C++ pointers to application code;
-- use V8 as a hidden bridge;
-- use JavaScript glue to implement normal Web API access;
-- maintain a string-based reflection registry for statically reached members;
-- treat `lib.dom.d.ts` as sufficient evidence of Blink implementation semantics;
-- fork TypeScript's DOM declarations merely to express native binding metadata.
+- emulate DOM calls in the browser process;
+- expose Blink pointers to generated application code;
+- use V8 as a hidden value/callback/promise bridge;
+- evaluate application JavaScript;
+- parse generated V8 C++ to discover Blink calls;
+- maintain a second raw WebIDL compiler;
+- derive Blink semantics from `lib.dom.d.ts` alone;
+- use a dynamic reflection/command registry for statically resolved members;
+- generate realm, handle, subscription and scheduler algorithms per interface;
+- claim support for APIs whose binding-neutral semantics have not been implemented.
