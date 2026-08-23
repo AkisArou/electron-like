@@ -18,12 +18,15 @@ source_set("nts_web_runtime") {
 source_set("nts_blink_bridge") {
   sources = [
     "nts_blink_dom.cc",
+    "nts_blink_events.cc",
     "nts_blink_event_listener.cc",
     "nts_blink_event_listener.h",
     "nts_blink_node_registry.cc",
     "nts_blink_node_registry.h",
     "nts_blink_realm.cc",
     "nts_blink_realm.h",
+    "nts_blink_subscription_registry.cc",
+    "nts_blink_subscription_registry.h",
   ]
 
   include_dirs = [ "." ]
