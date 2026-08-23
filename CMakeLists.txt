@@ -24,11 +24,19 @@ add_library(nts_counter_example OBJECT
 )
 target_link_libraries(nts_counter_example PRIVATE nts_web_contract)
 
+add_library(nts_create_element_example OBJECT
+  examples/create-element/app.c
+)
+target_link_libraries(nts_create_element_example PRIVATE nts_web_contract)
+
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(nts_web_runtime PRIVATE
     -Wall -Wextra -Wpedantic -Werror
   )
   target_compile_options(nts_counter_example PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  target_compile_options(nts_create_element_example PRIVATE
     -Wall -Wextra -Wpedantic -Werror
   )
 endif()
