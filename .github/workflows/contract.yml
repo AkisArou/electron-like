@@ -2,7 +2,8 @@ name: contract
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
 
 jobs:
   c-contract:
@@ -15,3 +16,10 @@ jobs:
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  chromium-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify patch against pinned Chromium
+        run: python3 scripts/verify_chromium_patches.py
