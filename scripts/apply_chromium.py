@@ -11,6 +11,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 REVISION_FILE = ROOT / "chromium" / "revision.json"
 PATCH_DIR = ROOT / "chromium" / "patches"
+OVERLAY_PATH = pathlib.Path("third_party/blink/renderer/native_typescript")
 
 
 def output(*args: str, cwd: pathlib.Path) -> str:
@@ -21,8 +22,8 @@ def run(*args: str, cwd: pathlib.Path) -> None:
     subprocess.run(args, cwd=cwd, check=True)
 
 
-def copy_overlay(checkout: pathlib.Path) -> None:
-    destination = checkout / "chromium" / "bridge"
+def copy_overlay(checkout: pathlib.Path) -> pathlib.Path:
+    destination = checkout / OVERLAY_PATH
     destination.mkdir(parents=True, exist_ok=True)
 
     for source in (ROOT / "chromium" / "bridge").iterdir():
@@ -36,6 +37,7 @@ def copy_overlay(checkout: pathlib.Path) -> None:
     for name in ("nts_handle_table.c", "nts_handle_table.h", "nts_web_exception.c"):
         shutil.copy2(ROOT / "src" / "runtime" / name,
                      runtime_destination / name)
+    return destination
 
 
 def main() -> None:
@@ -69,9 +71,9 @@ def main() -> None:
         run("git", "apply", str(patch), cwd=checkout)
         print(f"applied {name}")
 
-    copy_overlay(checkout)
-    print(f"installed Native TypeScript Blink bridge at {checkout / 'chromium' / 'bridge'}")
-    print("GN target: //chromium/bridge:nts_blink_bridge")
+    destination = copy_overlay(checkout)
+    print(f"installed Native TypeScript Blink bridge at {destination}")
+    print("GN target: //third_party/blink/renderer/native_typescript:nts_blink_bridge")
 
 
 if __name__ == "__main__":
