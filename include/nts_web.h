@@ -78,9 +78,11 @@ void nts_web_exception_dispose(NtsWebException *exception);
 bool nts_web_realm_is_current(const NtsWebRealm *realm);
 bool nts_web_realm_is_alive(const NtsWebRealm *realm);
 
-/* Root objects. */
-NtsWebHandle nts_web_window(NtsWebRealm *realm);
-NtsWebHandle nts_web_document(NtsWebRealm *realm);
+/* Root objects. Root acquisition can fail after context destruction or when a
+ * new native handle cannot be allocated, so it uses the same checked result
+ * form as all other interface-valued Web API results. */
+NtsWebHandleResult nts_web_window(NtsWebRealm *realm);
+NtsWebHandleResult nts_web_document(NtsWebRealm *realm);
 NtsWebHandleResult nts_web_document_body(NtsWebRealm *realm,
                                           NtsWebHandle document);
 
