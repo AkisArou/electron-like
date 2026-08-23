@@ -1,4 +1,4 @@
-#include "chromium/bridge/nts_blink_realm.h"
+#include "third_party/blink/renderer/native_typescript/nts_blink_realm.h"
 
 #include <new>
 
