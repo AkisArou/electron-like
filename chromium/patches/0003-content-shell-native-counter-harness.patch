@@ -61,11 +61,14 @@ diff --git a/content/shell/renderer/shell_content_renderer_client.cc b/content/s
  }  // namespace
  
  ShellContentRendererClient::ShellContentRendererClient(bool is_browsertest) {
-@@ -342,6 +381,7 @@ void ShellContentRendererClient::RenderFrameCreated(RenderFrame* render_frame) {
+@@ -342,6 +381,9 @@ void ShellContentRendererClient::RenderFrameCreated(RenderFrame* render_frame) {
    // browser tests. If we only create that for browser tests then the override
    // of this method in WebTestContentRendererClient would not be needed.
    new ShellRenderFrameObserver(render_frame);
-+  new NativeTypeScriptCounterObserver(render_frame);
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "native-typescript-counter")) {
++    new NativeTypeScriptCounterObserver(render_frame);
++  }
  }
  
  bool ShellContentRendererClient::OverrideCreatePlugin(
