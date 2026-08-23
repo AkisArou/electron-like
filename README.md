@@ -148,33 +148,33 @@ No V8 object, V8 function, JavaScript source evaluation, property lookup, or gen
 
 ## Development direction
 
-The next substantial work is a multi-repository compiler/generator loop rather than another handwritten DOM wrapper:
+The completed Chromium target will be integrated into [`AkisArou/native-typescript`](https://github.com/AkisArou/native-typescript), which is the product repository and source of truth.
+
+That repository already contains the Native TypeScript ScriptC fork at `third_party/scriptc` and its parent integration package at `packages/scriptc`. The intended integrated ownership is:
 
 ```text
-electron-like
-  -> nts_bind_gen + Blink runtime/host + Chromium tests
-
-ScriptC
-  -> Native Web schema import + lib.dom symbol mapping
-  -> Web-operation reachability + C/LLVM lowering
-
-native-typescript
-  -> Chromium target/provider + artifact orchestration
+native-typescript/
+├── packages/bindgen-webidl/     # Native Web schema + nts_bind_gen
+├── packages/target-chromium/    # pin, runtime, host, patches, artifact graph
+├── packages/scriptc/            # parent integration/orchestration
+└── third_party/scriptc/         # compiler/runtime submodule changes
 ```
 
-A local coding agent with simultaneous access to those repositories and a full Chromium checkout is the recommended environment. See [`docs/development-workflow.md`](docs/development-workflow.md).
+A full Chromium checkout is a disposable pinned build dependency. This repository is used only as migration input and executable feasibility evidence; it should not remain a separately developed product implementation after parity is reached.
+
+See [`docs/development-workflow.md`](docs/development-workflow.md) for the corrected single-repository integration workflow.
 
 ## Repository role
 
-This repository owns Chromium-specific generator, runtime, patch, product-host and conformance work. Generic TypeScript semantics, ownership analysis, callback semantics, promise/microtask machinery, native handles and Native IR belong in `native-typescript` / ScriptC when they are target-independent.
+This repository owns the feasibility spike and its evidence until migration. Durable generator, target, runtime, product-host and conformance work moves into `native-typescript`; reusable compiler/runtime changes live in its checked-in ScriptC submodule and shared packages.
 
-The standalone CMake build validates the public C contract and target-neutral runtime pieces. The Blink adapter is compiled inside the pinned Chromium GN/Ninja build, where Blink implementation types are available.
+The standalone CMake build validates the current C contract and target-neutral runtime specimens. The Blink adapter is compiled inside the pinned Chromium GN/Ninja build, where Blink implementation types are available.
 
 Documentation:
 
 - [`docs/architecture.md`](docs/architecture.md) — normative final architecture;
 - [`docs/bindings-generation.md`](docs/bindings-generation.md) — WebIDL/schema/generator design;
-- [`docs/development-workflow.md`](docs/development-workflow.md) — local multi-repository agent workflow;
+- [`docs/development-workflow.md`](docs/development-workflow.md) — Native TypeScript integration workflow;
 - [`docs/chromium-seams.md`](docs/chromium-seams.md) — pinned Chromium implementation evidence;
 - [`docs/records/`](docs/records/) — dated decisions and findings;
 - [`include/nts_web.h`](include/nts_web.h) — current experimental C ABI.
