@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check V8-free bridge invariant
+        run: python3 scripts/check_no_v8_bridge.py
       - name: Configure
         run: cmake -S . -B build
       - name: Build
