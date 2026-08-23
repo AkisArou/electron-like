@@ -4,8 +4,8 @@
 #include <cstdint>
 
 #include "base/sequence_checker.h"
-#include "nts_web.h"
-#include "runtime/nts_handle_table.h"
+#include "third_party/blink/renderer/native_typescript/nts_web.h"
+#include "third_party/blink/renderer/native_typescript/runtime/nts_handle_table.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 
 namespace blink {
