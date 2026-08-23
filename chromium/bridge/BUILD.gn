@@ -1,0 +1,26 @@
+# Copyright 2026
+# Native TypeScript direct-Blink bridge. This file is overlaid into
+# //third_party/blink/renderer/native_typescript by scripts/apply_chromium.py.
+
+source_set("nts_blink_bridge") {
+  sources = [
+    "nts_blink_dom.cc",
+    "nts_blink_event_listener.cc",
+    "nts_blink_event_listener.h",
+    "nts_blink_node_registry.cc",
+    "nts_blink_node_registry.h",
+    "nts_blink_realm.cc",
+    "nts_blink_realm.h",
+    "runtime/nts_handle_table.c",
+    "runtime/nts_handle_table.h",
+    "runtime/nts_web_exception.c",
+  ]
+
+  include_dirs = [ "." ]
+
+  deps = [
+    "//base",
+    "//third_party/blink/renderer/core",
+    "//third_party/blink/renderer/platform",
+  ]
+}
