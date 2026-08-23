@@ -12,6 +12,7 @@ target_include_directories(nts_web_contract INTERFACE
 
 add_library(nts_web_runtime STATIC
   src/runtime/nts_handle_table.c
+  src/runtime/nts_web_exception.c
 )
 target_include_directories(nts_web_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
