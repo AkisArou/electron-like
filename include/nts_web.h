@@ -11,10 +11,20 @@ extern "C" {
 
 typedef struct NtsWebRealm NtsWebRealm;
 
+/* Borrowed UTF-8 input. The callee may read it only for the dynamic extent of
+ * the call unless a specific generated binding declares and performs a copy. */
 typedef struct {
   const uint8_t *data;
   size_t length;
 } NtsUtf8View;
+
+/* Owned UTF-8 output used by exception payloads. `data == NULL` represents an
+ * empty/not-present allocation. Dispose through nts_web_exception_dispose();
+ * generated code must not free these buffers with an assumed allocator. */
+typedef struct {
+  uint8_t *data;
+  size_t length;
+} NtsOwnedUtf8;
 
 typedef struct {
   uint32_t slot;
@@ -43,8 +53,8 @@ typedef enum {
 typedef struct {
   NtsWebStatus status;
   uint16_t legacy_code;
-  NtsUtf8View name;
-  NtsUtf8View message;
+  NtsOwnedUtf8 name;
+  NtsOwnedUtf8 message;
 } NtsWebException;
 
 typedef struct {
@@ -57,6 +67,11 @@ typedef struct {
   NtsWebStatus status;
   NtsWebException exception;
 } NtsWebVoidResult;
+
+/* Releases all storage owned by an exception payload and resets it to the
+ * success/empty state. It is valid to call this on a zero-initialized or
+ * already-disposed exception. */
+void nts_web_exception_dispose(NtsWebException *exception);
 
 /* Realm lifecycle. A realm is bound to one Blink ExecutionContext and one
  * renderer owner sequence. The Blink adapter constructs/destroys it. */
