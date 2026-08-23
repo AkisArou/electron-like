@@ -3,55 +3,112 @@
 Status: implementation evidence for the pinned Chromium revision  
 Chromium: `96324a4012fe62f48b9463a67486eeb645bc5c78`
 
-This file records the concrete Blink seams the native binding must use or refactor. It is deliberately narrower than `architecture.md`: these are facts about one pinned Chromium tree, not permanent Web API semantics.
+This file records concrete facts about one Chromium tree. The normative product and generator design is in [`architecture.md`](architecture.md) and [`bindings-generation.md`](bindings-generation.md).
 
 ## Rule
 
-The Native TypeScript path must never solve a blocked Blink API by going through a V8 wrapper, evaluating JavaScript, or reimplementing Web-standard behavior in the adapter.
+A blocked Web API is never implemented by entering a generated V8 wrapper, evaluating JavaScript, swallowing a Web-observable failure, or copying a standards algorithm into an application adapter.
 
-If Blink's public binding-facing entry contains V8-only machinery, the correct change is to split the Blink implementation into:
+The scalable correction is a **horizontal binding-neutral seam** shared by classes of APIs:
 
 ```text
-binding-specific conversion / exception carrier
-                    |
-                    v
-          binding-neutral Blink operation
-                    |
-                    v
-             DOM implementation
+Blink implementation
+        |
+binding-neutral exception / realm / promise / callback primitive
+        |
+        +------------------+
+        |                  |
+     V8 adapter      Native TypeScript adapter
 ```
 
-V8 and Native TypeScript then become sibling callers of the binding-neutral operation.
+A per-member overload or handwritten capsule is acceptable as a feasibility specimen, but it is not automatically the final pattern. The final backend generates member capsules and keeps Chromium patches concentrated in cross-cutting seams.
 
-## Document.body
+## Chromium WebIDL pipeline
 
-Blink already exposes a direct implementation call:
+The pinned tree already provides the semantic compiler that Native TypeScript should reuse:
+
+```text
+third_party/blink/renderer/bindings/scripts/web_idl/
+third_party/blink/renderer/bindings/scripts/build_web_idl_database.py
+third_party/blink/renderer/bindings/scripts/generate_bindings.py
+third_party/blink/renderer/bindings/scripts/bind_gen/
+```
+
+`web_idl_database.pickle` is produced as a GN target and is consumed by Blink's V8 bindings generator. The Native TypeScript backend should consume the same database through a sibling `nts_bind_gen` package rather than parse raw IDL separately.
+
+Relevant source:
+
+- `third_party/blink/renderer/bindings/BUILD.gn`
+- `third_party/blink/renderer/bindings/scripts/web_idl/README.md`
+- `third_party/blink/renderer/bindings/scripts/bind_gen/README.md`
+
+## `Document.body`
+
+Blink exposes a direct implementation call:
 
 ```cpp
 HTMLElement* Document::body() const;
 ```
 
-This needs no V8 value, `ScriptState`, or generated V8 binding wrapper. The native capsule may call it directly and intern the returned object in the realm handle registry.
+It needs no V8 value, `ScriptState` or generated V8 wrapper. A generated native capsule resolves a `Document` handle, calls `body()`, represents null according to the generated ABI and interns a non-null result.
 
-Source:
-`third_party/blink/renderer/core/dom/document.h`
+Current specimen:
 
-## Node.textContent setter
+- `chromium/bridge/nts_blink_dom.cc`
 
-Blink already has a direct implementation entry:
+Blink source:
+
+- `third_party/blink/renderer/core/dom/document.h`
+
+## `Node.textContent`
+
+Blink exposes:
 
 ```cpp
 virtual void Node::setTextContent(const String&);
 ```
 
-The binding-facing overload additionally handles Trusted Types/WebIDL conversion. The native binding generator must select the correct WebIDL conversion first; once it has produced the effective Blink `String`, the capsule calls the direct implementation entry.
+For ordinary elements in the counter fixture, the current capsule performs the narrow string conversion and calls this implementation directly.
 
-Source:
-`third_party/blink/renderer/core/dom/node.h`
+The WebIDL-facing setter also participates in Trusted Types for relevant receivers, especially script text. The current bridge refuses the script-element shape instead of bypassing that policy. `nts_bind_gen` must classify the reached operation by the exact WebIDL/receiver semantics and select a binding-neutral Trusted Types path before claiming the complete setter surface.
 
-## EventTarget.addEventListener
+Current specimen:
 
-Blink's event system already supports a non-JavaScript listener path:
+- `chromium/bridge/nts_blink_dom.cc`
+
+Blink source:
+
+- `third_party/blink/renderer/core/dom/node.h`
+
+## `Node.appendChild`
+
+Blink's complete Web-exposed path accepts `ExceptionState&` and performs pre-insertion validity, adoption/move behavior and observable DOM exceptions.
+
+The current counter accepts only the proven no-failure shape:
+
+```text
+Element parent
++ detached Element child
++ valid child type
++ no ancestor cycle
+```
+
+It prevalidates that shape and calls Blink's direct append implementation. Other shapes return an explicit unsupported status rather than use `ASSERT_NO_EXCEPTION` where a DOM exception may be observable.
+
+This is sufficient for the counter specimen, not complete `Node.appendChild` support. The scalable completion is the central pluggable exception sink described below, allowing the generated capsule to call the normal throwing Blink implementation without V8.
+
+Current specimen:
+
+- `chromium/bridge/nts_blink_dom.cc`
+
+Blink sources:
+
+- `third_party/blink/renderer/core/dom/node.cc`
+- `third_party/blink/renderer/core/dom/container_node.cc`
+
+## `EventTarget.addEventListener`
+
+Blink has a native listener path:
 
 ```cpp
 bool EventTarget::addEventListener(const AtomicString& event_type,
@@ -59,23 +116,43 @@ bool EventTarget::addEventListener(const AtomicString& event_type,
                                    bool use_capture = false);
 ```
 
-`NativeEventListener` is an existing Blink listener base. Blink code subclasses it and receives:
+`NativeEventListener` receives:
 
 ```cpp
 void Invoke(ExecutionContext*, Event*) override;
 ```
 
-This is exactly the shape required by Native TypeScript events: the generated/native listener stores a callback token, receives the real Blink `Event*`, interns that event as a realm handle when the callback signature needs it, and enters the ScriptC callback directly on the owner sequence.
+This permits direct event delivery:
 
-No V8 listener object is required. `chromium/bridge/nts_blink_event_listener.*` carries the first adapter for this path.
+```text
+Blink event dispatch
+      |
+BlinkNativeEventListener
+      |
+NtsWebCallbackToken
+      |
+ScriptC/native callback dispatcher
+```
 
-Sources:
+The same listener object is retained for deterministic `removeEventListener` identity. The realm-owned subscription registry cancels all registrations before callback storage disappears.
+
+At the pinned revision, `EventTarget::AddEventListenerInternal` also consults an isolated-world V8 activity logger even for a native listener. `chromium/patches/0002-native-event-listener-without-v8-logger.patch` gates that diagnostic path to JavaScript-based listeners so the Native TypeScript registration path does not enter V8 merely for logging.
+
+Current runtime/specimen:
+
+- `chromium/bridge/nts_blink_event_listener.*`
+- `chromium/bridge/nts_blink_subscription_registry.*`
+- `chromium/bridge/nts_blink_events.cc`
+
+Blink sources:
+
 - `third_party/blink/renderer/core/dom/events/event_target.h`
+- `third_party/blink/renderer/core/dom/events/event_target.cc`
 - `third_party/blink/renderer/core/dom/events/native_event_listener.h`
 
-## Document.createElement
+## `Document.createElement`
 
-The first binding-neutral Blink cut is now represented in this repository.
+The first binding-neutral exception cut is represented in the repository.
 
 At the pinned revision the binding-facing operation is:
 
@@ -84,23 +161,16 @@ Element* Document::CreateElementForBinding(const AtomicString& name,
                                            ExceptionState& exception_state);
 ```
 
-The body is the real one-argument DOM create-element algorithm. It validates the name, performs HTML local-name normalization, routes custom elements through Blink's custom-element implementation, uses the HTML element factory, preserves the unknown-element fallback, and handles non-HTML documents. Its only binding-specific dependency in that body is `ExceptionState::ThrowDOMException` for an invalid name.
+Its body is Blink's actual one-argument DOM algorithm: name validation, HTML ASCII-lowercasing, custom-element routing, HTML element factory selection, unknown-element fallback and non-HTML document behavior.
 
-`ExceptionState` is V8-oriented: it stores a `v8::Isolate*` and materializes V8 exceptions. Passing a null/testing state would erase observable failure semantics, while calling the generated V8 wrapper would violate the Native TypeScript call-path invariant.
+The blocking dependency was `ExceptionState`, which stores a V8 isolate and materializes V8 exceptions. A null/testing state would erase the observable `InvalidCharacterError` path.
 
-`chromium/patches/0001-binding-neutral-web-exception-state.patch` therefore adds a stack-owned `WebExceptionState` with no V8 value/isolate/state and a sibling overload:
-
-```cpp
-Element* Document::CreateElementForBinding(const AtomicString& name,
-                                           WebExceptionState& exception_state);
-```
-
-The existing V8-facing overload becomes an adapter to the same DOM algorithm:
+`chromium/patches/0001-binding-neutral-web-exception-state.patch` adds a V8-free `WebExceptionState` and a sibling overload. The existing V8 overload and the Native TypeScript capsule reach one DOM algorithm:
 
 ```text
 V8 caller                        Native TypeScript caller
    |                                      |
-ExceptionState                      C ABI / capsule
+ExceptionState                      typed C capsule
    |                                      |
    +---------- WebExceptionState ---------+
                       |
@@ -108,107 +178,233 @@ ExceptionState                      C ABI / capsule
        one Document createElement body
 ```
 
-The Native TypeScript capsule in `chromium/bridge/nts_blink_dom.cc` resolves a generation/type-checked `Document` handle, performs the current narrow string conversion, calls the neutral overload directly, converts a `WebExceptionState` into the C result, and interns the returned real `blink::Element` in the Oilpan-rooted node registry.
+The C fixture also requires invalid-name failure with `InvalidCharacterError` legacy code `5`, preventing a happy-path-only implementation.
 
-The plain-C probe in `examples/create-element/app.c` also exercises an invalid tag name and requires `InvalidCharacterError`'s legacy code `5`, so the implementation cannot make only the happy path work by swallowing exceptions.
+### Scalable destination
 
-This source seam is implemented. A full Chromium GN/Ninja compile and rendered fixture remain execution evidence rather than something this register infers from source.
+The overload proves the semantic cut. The preferred final architecture is not one `WebExceptionState` overload per throwing member.
 
-Sources:
+Instead, existing Blink implementation signatures should continue accepting an exception state whose throw operations delegate to a pluggable sink:
+
+```text
+ExceptionState
+   /       \
+V8 sink   Native exception collector
+```
+
+That horizontal refactor would unlock ordinary throwing `Node`, `Element`, `Document` and other WebIDL methods for generated capsules while leaving V8 behavior intact. V8-only actions such as rethrowing an arbitrary `v8::Value` remain explicitly unavailable to the native backend.
+
+Current specimen/evidence:
+
+- `chromium/patches/0001-binding-neutral-web-exception-state.patch`
+- `chromium/bridge/nts_blink_dom.cc`
+- `examples/create-element/app.c`
+- `docs/records/0001-direct-create-element.md`
+
+Blink sources:
+
 - `third_party/blink/renderer/core/dom/document.h`
 - `third_party/blink/renderer/core/dom/document.cc`
 - `third_party/blink/renderer/platform/bindings/exception_state.h`
-- `chromium/patches/0001-binding-neutral-web-exception-state.patch`
-- `chromium/bridge/nts_blink_dom.cc`
 
 ## Execution-context lifetime
 
-A native realm follows `ExecutionContext` lifetime rather than renderer-process lifetime.
+The native realm follows `ExecutionContext` lifetime rather than renderer-process lifetime.
 
-Blink already has `ExecutionContextLifecycleObserver` and `ContextDestroyed()`. `NtsWebRealm` now roots a GC-owned lifecycle observer. `ContextDestroyed()` invalidates the off-heap realm on the owner sequence before the execution context disappears.
+Blink's `ExecutionContextLifecycleObserver::ContextDestroyed()` is the deterministic shutdown hook. `NtsWebRealm` roots a GC-owned lifecycle observer that invalidates the off-heap realm on the owner sequence before the context disappears.
 
-The current invalidation path:
+The current transition:
 
-1. rejects later DOM operations through the realm alive check;
-2. invalidates the native handle table;
-3. destroys/relinquishes every node `Persistent` root;
-4. clears the rooted document;
-5. leaves later ScriptC runtime/callback shutdown to be attached to this same realm transition as those services land.
+1. rejects later DOM operations;
+2. cancels registered event subscriptions;
+3. invalidates handle generations;
+4. releases node/object Oilpan roots;
+5. clears the rooted document;
+6. leaves ScriptC runtime/promise shutdown to attach to this same transition.
 
-No handle from the old context can become valid in a later document because old slot/generation identities become stale when the registry is invalidated.
+No old handle can become valid in a later document.
 
-Sources:
-- `third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h`
+Current runtime:
+
 - `chromium/bridge/nts_blink_realm.*`
 
-## Oilpan roots
+Blink source:
 
-The C handle table does not own Blink pointers. A Blink-side token owns the GC edge represented by each live native handle.
+- `third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h`
 
-The current `BlinkNodeRegistry` uses one `Persistent<Node>` per distinct live native identity. Tokens are destroyed when the final C alias is released or when the realm is invalidated. Cross-thread persistent handles are not part of the design: a realm and all of its DOM handles are owner-sequence confined.
+## Oilpan roots and identity
 
-Source:
-- `third_party/blink/renderer/platform/heap/persistent.h`
+The portable C handle table owns only slot, generation, reference count and generated type identity. It never owns a Blink raw pointer.
+
+The current `BlinkNodeRegistry` stores one same-thread `Persistent<Node>` per distinct live native identity. Interning the same object returns the same slot and increments its native reference count. Realm invalidation destroys all roots and advances generations.
+
+The final runtime must generalize this algorithm to all supported WebIDL interface objects, including non-Node objects such as events, responses and controllers. `nts_bind_gen` supplies type IDs and inheritance; the registry supplies identity/rooting/lifetime.
+
+A long-lived untraced raw-pointer reverse map is forbidden. The current implementation scans rooted entries; a later GC-aware reverse map may replace the scan without changing observable handle identity.
+
+Current runtime:
+
+- `src/runtime/nts_handle_table.*`
 - `chromium/bridge/nts_blink_node_registry.*`
 
-## Handle identity
+Blink source:
 
-The target-neutral table in `src/runtime/nts_handle_table.*` owns only slot/generation/reference/type state.
-
-The Blink registry owns object identity. Interning the same Blink object twice returns the same logical handle slot with an incremented reference count.
-
-The registry does not keep an untraced raw Blink pointer as a long-lived identity key. The first implementation scans the realm's live rooted entries; a later GC-aware reverse map may replace the scan without changing handle semantics.
+- `third_party/blink/renderer/platform/heap/persistent.h`
 
 ## Type identity
 
-The future WebIDL generator supplies a closed interface-inheritance table to the handle-table `type_accepts` hook. The current narrow registry contains explicit IDs for `Node`, `Document`, `Element`, `HTMLElement`, and `HTMLBodyElement` so the first direct calls can validate receiver identity before dereferencing the backend token.
+The current registry has handwritten IDs for the first DOM inheritance chain. These are experiment data.
 
-Type IDs are manifest data in the final generator. Unknown or mismatched identities fail before a Blink object is used.
+The final `nts_bind_gen` emits:
+
+- canonical interface type IDs;
+- inheritance/mixin upcast tables;
+- callback signature IDs;
+- dictionary/union/enum identities;
+- schema digest and provenance.
+
+A generated `HTMLButtonElement` handle can be consumed by reached operations expecting `HTMLElement`, `Element`, `Node` or `EventTarget` according to that table. A mismatch fails before a Blink object is dereferenced.
+
+## Binding realm and `ScriptState`
+
+Many direct DOM members need only an `ExecutionContext` or no script state. Other APIs are annotated or implemented with `ScriptState` because the V8 binding needs realm identity, promise creation or JavaScript values.
+
+The scalable seam is a binding-neutral realm/context contract that exposes only the semantics required by the implementation:
+
+```text
+BindingRealm
+  - ExecutionContext
+  - realm identity
+  - task runner
+  - exception sink factory
+  - promise resolver factory
+  - microtask integration
+```
+
+V8 `ScriptState` and `NtsWebRealm` become sibling adapters. An operation that truly accepts or returns arbitrary JavaScript values stays unsupported until its semantics can be expressed in the native value algebra.
+
+This seam is not implemented yet; the generator coverage report must name it when it blocks an operation.
+
+## Promise seam
+
+Blink methods returning `ScriptPromise<T>` are not made native by wrapping or polling a V8 Promise.
+
+The desired horizontal shape is:
+
+```text
+Blink asynchronous implementation
+              |
+     WebPromiseResolver<T>
+          /            \
+     V8 adapter     ScriptC adapter
+```
+
+The ScriptC adapter settles a ScriptC promise on the realm owner sequence and participates in the declared Chromium/ScriptC microtask checkpoint.
+
+Promise support requires ordering tests; eventual completion alone is insufficient.
 
 ## Build placement
 
-Blink core's GN visibility admits dependents under `//third_party/blink/renderer/*`, so the overlay installs at:
+The overlay is installed under:
 
 ```text
 third_party/blink/renderer/native_typescript
 ```
 
-and exposes:
+Current targets include the portable C runtime, Blink C++ bridge, plain-C counter and counter host.
+
+The final tree separates:
 
 ```text
-//third_party/blink/renderer/native_typescript:nts_blink_bridge
+native_typescript/
+├── runtime/       # maintained handwritten code
+├── generated/     # nts_bind_gen output
+└── host/          # product/embedder integration
 ```
 
-The portable C runtime is a separate GN source set from the Blink C++ capsule so it does not inherit Blink's C++ PCH/configuration. The C++ bridge receives the normal Blink renderer/core configs.
+`nts_bind_gen` itself belongs beside Chromium's bindings scripts and consumes the existing `web_idl_database` GN output. Generated source lists enter GN through deterministic generated `.gni` or equivalent declared outputs.
 
-`scripts/verify_chromium_patches.py` checks the patch series against the exact pinned Chromium inputs on every `main` push, and `scripts/check_no_v8_bridge.py` rejects direct bridge source that introduces V8 value/state/wrapper or script-evaluation paths.
+`scripts/verify_chromium_patches.py` checks the patch series against the exact pin. `scripts/check_no_v8_bridge.py` rejects direct bridge source that introduces V8 values/state/wrappers or script evaluation.
 
-## First direct call chain
+## Product host seam
 
-The direct source path now has this shape:
+The current `content_shell` observer and `nts_blink_counter_host.*` are experiment harnesses. They prove the public-frame-to-internal-document startup path and deterministic teardown.
+
+The final product host will instead:
+
+- admit the intended document/origin;
+- create `NtsWebRealm` and a ScriptC runtime instance;
+- load or link the compiled application artifact;
+- call its generated entry point;
+- provide typed browser-process capabilities;
+- destroy the application/runtime on execution-context shutdown.
+
+No counter-specific concept remains.
+
+## Generator consequences
+
+The present bridge files divide into two categories.
+
+Generated later:
+
+- operation/getter/setter capsules in `nts_blink_dom.cc`;
+- `addEventListener` overload/conversion capsule in `nts_blink_events.cc`;
+- interface type IDs/inheritance;
+- callback signature marshalling;
+- selected GN source lists and coverage reports.
+
+Permanent runtime categories:
+
+- realm/lifecycle;
+- generic interface-object registry;
+- callback dispatcher/listener base;
+- subscription registry;
+- promise/scheduler integration;
+- native exception adapter.
+
+The handwritten counter path is retained as an executable oracle until generated replacements pass its tests.
+
+## Direct interactive call chain
+
+The represented counter path is:
 
 ```text
 plain generated-style C
         |
         v
-nts_web_document_create_element
+Document root / body / createElement capsules
         |
         v
-checked NtsWebRealm + Document handle
+checked realm and generated-type handles
         |
         v
-WebExceptionState
+real Blink Document / Node operations
         |
         v
-blink::Document::CreateElementForBinding
+Oilpan-rooted heading and button
         |
         v
-real blink::Element
+native EventTarget listener registration
         |
         v
-Oilpan-rooted realm handle
+real browser click -> callback token
+        |
+        v
+plain-C state update -> Node.textContent
+        |
+        v
+Blink layout / paint
 ```
 
-The remaining counter operations can build on already-identified direct seams: `Document::body`, `Node::setTextContent`, tree insertion/removal, and Blink's native event-listener path.
+No V8 object, V8 function, V8 DOM wrapper, V8 promise, JavaScript property lookup, evaluated source or remote DOM call is a Native TypeScript bridge carrier in this chain.
 
-At no point in this direct call chain is a V8 context, V8 object, V8 function, V8 promise, JavaScript property lookup, or evaluated JavaScript source used as the Native TypeScript bridge.
+## Evidence boundary
+
+The repository distinguishes:
+
+- source evidence: the direct call path and patches are represented;
+- patch evidence: patches apply to the exact pin;
+- compile evidence: the GN/Ninja targets compile in a real Chromium checkout;
+- behavioral evidence: the rendered script-free page responds to real input and passes assertions.
+
+Documentation must state which level has actually been observed for a given commit and environment.
